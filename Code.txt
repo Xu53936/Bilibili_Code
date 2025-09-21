@@ -1,0 +1,42 @@
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.metrics import roc_curve, auc, roc_auc_score
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+import matplotlib.pyplot as plt
+
+# 读取数据
+data = pd.read_csv('D:\\Desktop\\演示文件.csv')
+
+# 检查缺失值并删除包含缺失值的行
+data = data.dropna()
+
+# 分离特征和标签
+X = data.drop(columns=['是否脑卒中'])  # 特征矩阵
+y = data['是否脑卒中'] 
+
+# 预处理代码
+categorical_cols = ['红细胞或血红蛋白是否减少', '是否糖尿病', '是否有高血压', '性别', '是否吸烟']
+encoder = OneHotEncoder(drop='first', sparse_output=False)
+X_encoded = pd.DataFrame(
+    encoder.fit_transform(X[categorical_cols]),
+    columns=encoder.get_feature_names_out(categorical_cols)
+)
+X = pd.concat([X.drop(columns=categorical_cols), X_encoded], axis=1)
+
+# 标准化数值特征
+val_cols = ['年龄', 'CPK酶水平', '射血分数', '血小板水平', '血清钠', '血肌酐']
+scaler = StandardScaler()
+X[val_cols] = scaler.fit_transform(X[val_cols])
+
+# 将数据转换为 float32 类型
+X = X.astype(np.float32)
+
+# 分割数据集为训练集和测试集，测试集占30%
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=123)
