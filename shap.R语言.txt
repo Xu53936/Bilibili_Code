@@ -1,0 +1,99 @@
+
+# 确保所需包已安装
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("pheatmap")) install.packages("pheatmap")
+if (!require("ggforce")) install.packages("ggforce")
+if (!require("viridis")) install.packages("viridis")
+
+# 1. 优化的特征重要性排序图（带有数值标签）
+feature_importance <- shap_values %>%
+  group_by(feature) %>%
+  summarise(importance = mean(abs(phi))) %>%
+  arrange(desc(importance))
+
+ggplot(feature_importance, aes(x = reorder(feature, importance), y = importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = round(importance, 3)), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(title = "特征重要性 (基于SHAP值)",
+       x = "特征",
+       y = "平均绝对SHAP值") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# 2. SHAP蜂群图（每个特征的SHAP值分布）
+ggplot(shap_values, aes(x = value, y = phi, color = value)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  facet_wrap(~feature, scales = "free_x") +
+  scale_color_viridis(option = "plasma") +
+  labs(title = "SHAP值蜂群图",
+       x = "特征值",
+       y = "SHAP值") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# 3. 蜂群交互矩阵图（展示特征间交互作用）
+# 首先获取前N个重要特征进行交互分析
+top_features <- feature_importance$feature[1:5]  # 取前5个最重要特征
+shap_subset <- filter(shap_values, feature %in% top_features)
+
+# 创建交互矩阵图
+ggplot(shap_subset, aes(x = value, y = phi)) +
+  geom_point(aes(color = phi), alpha = 0.7) +
+  facet_matrix(vars(feature), layer.diag = "blank") +  # 对角线空白
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(title = "SHAP值交互矩阵图",
+       x = "特征值",
+       y = "SHAP值") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# 4. SHAP值热图（展示样本与特征的SHAP值分布）
+# 转换数据格式为矩阵
+shap_matrix <- shap_values %>%
+  select(sample, feature, phi) %>%
+  tidyr::pivot_wider(names_from = feature, values_from = phi) %>%
+  column_to_rownames("sample") %>%
+  as.matrix()
+
+# 绘制热图
+pheatmap(shap_matrix,
+         scale = "row",  # 按行标准化
+         treeheight_row = 10,
+         treeheight_col = 10,
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         main = "SHAP值热图",
+         show_rownames = FALSE,
+         annotation_legend = TRUE)
+
+# 5. 变量依赖图（部分依赖图，展示特征值与SHAP值的关系）
+# 对每个重要特征创建依赖图
+walk(top_features, function(feat) {
+  p <- ggplot(filter(shap_values, feature == feat), 
+              aes(x = value, y = phi)) +
+    geom_point(alpha = 0.5, color = "darkblue") +
+    geom_smooth(method = "loess", se = TRUE, color = "red", span = 0.75) +
+    labs(title = paste("变量依赖图 -", feat),
+         x = paste(feat, "值"),
+         y = "SHAP值") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+  print(p)
+})
+
+# 6. 额外补充：SHAP力导向图（展示单个样本的解释）
+# 选择第一个样本进行可视化
+single_sample <- filter(shap_values, sample == unique(shap_values$sample)[1])
+
+ggplot(single_sample, aes(x = phi, y = reorder(feature, phi))) +
+  geom_col(aes(fill = phi > 0)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_fill_manual(values = c("red", "green"), labels = c("降低预测", "增加预测")) +
+  labs(title = paste("单个样本SHAP力导向图 (样本", unique(single_sample$sample)[1], ")"),
+       x = "SHAP值",
+       y = "特征",
+       fill = "影响方向") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
