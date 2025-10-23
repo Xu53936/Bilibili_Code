@@ -1,0 +1,71 @@
+# 定义每个模型的参数网格
+param_grids = {
+    'log_reg': {
+        'C': [0.1, 1, 10],
+        'penalty': ['l2'],
+        'solver': ['lbfgs', 'saga']
+    },
+    'rf': {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [None, 10, 20],
+        'min_samples_split': [2, 5, 10]
+    },
+    'svm': {
+        'C': [0.1, 1, 10],
+        'kernel': ['linear', 'rbf'],
+        'gamma': ['scale', 'auto']
+    },
+    'xgb': {
+        'learning_rate': [0.01, 0.1, 0.3],
+        'max_depth': [3, 5, 7],
+        'n_estimators': [100, 200],
+        'subsample': [0.8, 1.0]
+    },
+    'lgb': {
+        'learning_rate': [0.01, 0.1, 0.3],
+        'num_leaves': [31, 50, 100],
+        'n_estimators': [100, 200],
+        'boosting_type': ['gbdt', 'dart']
+    },
+    'mlp': {
+        'hidden_layer_sizes': [(50,), (100,), (100, 50)],
+        'learning_rate_init': [0.001, 0.01],
+        'max_iter': [200, 300]
+    }
+}
+
+# 创建模型实例
+models = {
+    'log_reg': LogisticRegression(random_state=42),
+    'rf': RandomForestClassifier(random_state=42),
+    'svm': SVC(probability=True, random_state=42),  # 注意：probability=True
+    'xgb': XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
+    'lgb': LGBMClassifier(random_state=42),
+    'mlp': MLPClassifier(random_state=42)
+}
+
+# 存储最佳模型
+best_models = {}
+
+# 遍历每个模型及其对应的参数网格进行网格搜索
+for model_name in models:
+    print(f"Performing grid search for {model_name}...")
+    
+    grid_search = GridSearchCV(
+        estimator=models[model_name],
+        param_grid=param_grids[model_name],
+        scoring='roc_auc',
+        cv=5,
+        n_jobs=1,
+        verbose=1
+    )
+    
+    # 进行网格搜索并寻找最佳参数
+    grid_search.fit(X_train, y_train)
+    
+    # 打印最佳参数
+    print(f"Best parameters for {model_name}: {grid_search.best_params_}")
+    print(f"Best AUC score: {grid_search.best_score_}\n")
+    
+    # 保存最佳模型
+    best_models[model_name] = grid_search.best_estimator_
