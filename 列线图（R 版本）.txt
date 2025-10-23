@@ -1,0 +1,65 @@
+# 加载必要的包
+install.packages("rms")
+library(rms)
+
+# 1. 配置 rms 环境
+dd <- datadist()
+options(datadist = "dd")
+
+# 2. 模拟研究数据（实际需替换为真实数据）
+set.seed(123)
+n <- 1000
+data <- data.frame(
+  hypertension = factor(sample(c("无", "有"), n, replace = TRUE, prob = c(0.7, 0.3))),
+  diabetes = factor(sample(c("无", "有"), n, replace = TRUE, prob = c(0.8, 0.2))),
+  smoking = factor(sample(c("无", "既往", "目前"), n, replace = TRUE, prob = c(0.6, 0.2, 0.2))),
+  education = factor(sample(c("0-6", "6-9", "9-12", ">12"), n, replace = TRUE, prob = c(0.1, 0.2, 0.3, 0.4))),
+  stroke_type = factor(sample(
+    c("小血管闭塞", "其他原因", "大动脉粥样硬化", "不明原因", "心源性栓塞"),
+    n, replace = TRUE, prob = c(0.3, 0.2, 0.2, 0.15, 0.15)
+  )),
+  time = sample(1:6, n, replace = TRUE),  # 随访时间（年）
+  event = rbinom(n, 1, 0.2)  # 复发事件（1=复发，0=未复发）
+)
+
+# 3. 为变量分配得分（匹配列线图）
+data$score_hypertension <- ifelse(data$hypertension == "有", 30, 0)
+data$score_diabetes <- ifelse(data$diabetes == "有", 40, 0)
+data$score_smoking <- ifelse(data$smoking == "无", 0, ifelse(data$smoking == "既往", 20, 40))
+data$score_education <- ifelse(data$education == "0-6", 100, 
+                              ifelse(data$education == "6-9", 70, 
+                                     ifelse(data$education == "9-12", 50, 0)))
+data$score_stroke_type <- ifelse(data$stroke_type == "小血管闭塞", 0, 
+                                ifelse(data$stroke_type == "其他原因", 20, 
+                                       ifelse(data$stroke_type == "大动脉粥样硬化", 40, 
+                                              ifelse(data$stroke_type == "不明原因", 60, 80))))
+data$total_score <- with(data, score_hypertension + score_diabetes + score_smoking + score_education + score_stroke_type)
+
+# 4. 拟合 Cox 比例风险模型（生存模型）
+fit <- cph(Surv(time, event) ~ 
+             strat(hypertension) + 
+             strat(diabetes) + 
+             strat(smoking) + 
+             strat(education) + 
+             strat(stroke_type),
+           data = data, x = TRUE, y = TRUE, surv = TRUE)
+
+# 5. 绘制列线图
+nom <- nomogram(
+  fit,
+  fun = list(
+    # 1年无复发概率 = 1 - 1年复发概率
+    function(x) 1 - predict(fit, newdata = x, type = "lp", fun = function(lp) survfit(fit, newdata = x)$surv[survfit(fit, newdata = x)$time == 1]),
+    # 3年无复发概率
+    function(x) 1 - predict(fit, newdata = x, type = "lp", fun = function(lp) survfit(fit, newdata = x)$surv[survfit(fit, newdata = x)$time == 3]),
+    # 6年无复发概率
+    function(x) 1 - predict(fit, newdata = x, type = "lp", fun = function(lp) survfit(fit, newdata = x)$surv[survfit(fit, newdata = x)$time == 6])
+  ),
+  funlabel = c("1年无复发概率", "3年无复发概率", "6年无复发概率"),
+  lp = FALSE,  # 隐藏线性预测值轴
+  fun.at = list(seq(0.4, 0.95, 0.05), seq(0.2, 0.95, 0.05), seq(0.05, 0.95, 0.05))
+)
+
+# 6. 显示列线图
+plot(nom, xfrac = 0.4)
+title("预测青年卒中患者卒中复发的列线图", line = 3)
