@@ -1,0 +1,70 @@
+# 加载必要的包
+library(Boruta)       # Boruta变量筛选
+library(glmnet)       # Lasso回归
+library(caret)        # 数据划分、模型评估辅助
+
+# 模拟数据（100个样本，20个预测变量，1个二分类响应变量）
+set.seed(123)
+n <- 100
+p <- 20
+X <- matrix(rnorm(n * p), nrow = n, ncol = p)  # 预测变量
+colnames(X) <- paste0("Var", 1:p)
+y <- factor(rbinom(n, 1, plogis(0.5*X[,1] + 0.3*X[,5] - 0.2*X[,10])))  # 响应变量（仅与3个变量相关）
+data <- data.frame(y, X)  # 组合成数据框
+
+# 运行Boruta算法
+set.seed(456)
+boruta_result <- Boruta(y ~ ., data = data, doTrace = 2)  # doTrace=2显示迭代过程
+
+# 查看结果摘要
+print(boruta_result)
+
+# 可视化变量重要性（红色：重要；绿色：次要；蓝色：影子变量）
+plot(boruta_result, las = 2, cex.axis = 0.7)
+
+# 简化结果（将"暂定"变量归类为重要或不重要）
+boruta_final <- TentativeRoughFix(boruta_result)
+print(boruta_final)
+
+# 提取被选中的变量
+selected_boruta <- getSelectedAttributes(boruta_final, withTentative = FALSE)
+cat("Boruta筛选出的变量：", selected_boruta, "\n")
+
+# 划分训练集和测试集（可选，用于确定lambda）
+set.seed(789)
+trainIndex <- createDataPartition(data$y, p = 0.7, list = FALSE)
+train_data <- data[trainIndex, ]
+test_data <- data[-trainIndex, ]
+
+# 转换为矩阵格式（glmnet要求）
+x_train <- as.matrix(train_data[, -1])  # 预测变量（排除响应变量y）
+y_train <- train_data$y
+x_test <- as.matrix(test_data[, -1])
+y_test <- test_data$y
+
+# 运行Lasso回归（二分类问题用family="binomial"，回归问题用"gaussian"）
+set.seed(101)
+lasso_model <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",  # 二分类逻辑回归
+  alpha = 1,            # alpha=1表示Lasso（alpha=0为Ridge）
+  nfolds = 5            # 5折交叉验证确定最佳lambda
+)
+
+# 查看最佳lambda（最小MSE对应的lambda或1-SE规则的lambda）
+plot(lasso_model)  # 可视化交叉验证误差与lambda的关系
+best_lambda <- lasso_model$lambda.min  # 最小误差对应的lambda
+# best_lambda <- lasso_model$lambda.1se  # 更简洁的模型（系数更稀疏）
+
+# 提取Lasso筛选后的变量（系数非零的变量）
+lasso_coef <- coef(lasso_model, s = best_lambda)  # 最佳lambda对应的系数
+selected_lasso <- rownames(lasso_coef)[which(lasso_coef != 0)][-1]  # 排除截距项
+cat("Lasso筛选出的变量：", selected_lasso, "\n")
+
+cat("Boruta筛选结果：", selected_boruta, "\n")
+cat("Lasso筛选结果：", selected_lasso, "\n")
+
+# 交集变量（两种方法均认为重要）
+intersect_vars <- intersect(selected_boruta, selected_lasso)
+cat("两种方法共同筛选出的变量：", intersect_vars, "\n")
