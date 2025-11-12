@@ -1,0 +1,155 @@
+# 1. 加载必要包
+if (!require("bnlearn")) {
+  install.packages("bnlearn", repos = "https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
+  library(bnlearn)
+}
+if (!require("boot")) {
+  install.packages("boot", repos = "https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
+  library(boot)
+}
+
+# bnlearn是专门用于贝叶斯网络建模的工具包，支持结构学习、参数学习和推理；boot用于统计分析（此处为辅助）
+
+# 2. 加载数据集（仅保留目标变量：年龄、性别、肿瘤厚度、溃疡状态）
+data(melanoma)
+# 筛选核心变量（删除生存状态，聚焦溃疡状态为结局）
+melanoma_core <- melanoma[, c("age", "sex", "thickness", "ulcer")]
+colnames(melanoma_core) <- c("年龄", "性别", "肿瘤厚度", "溃疡状态")
+
+#贝叶斯网络的核心是随机变量（节点） 和变量间的依赖关系。此处筛选的 4 个变量是后续网络的节点
+
+# 3. 数据预处理（聚焦溃疡状态结局）
+melanoma_proc <- melanoma_core
+# 年龄分组（临床标准）
+melanoma_proc$年龄 <- cut(melanoma_proc$年龄, breaks = c(0, 50, 70, Inf), labels = c("中青年", "老年", "高龄"))
+# 性别标签化（0=女性，1=男性）
+melanoma_proc$性别 <- factor(melanoma_proc$性别, levels = c(0, 1), labels = c("女性", "男性"))
+# 肿瘤厚度分组（预后相关，可能影响溃疡）
+melanoma_proc$`肿瘤厚度` <- cut(melanoma_proc$`肿瘤厚度`, breaks = c(0, 1, 4, Inf), labels = c("薄", "中", "厚"))
+# 溃疡状态（结局指标：0=无，1=有）
+melanoma_proc$`溃疡状态` <- factor(melanoma_proc$`溃疡状态`, levels = c(0, 1), labels = c("无", "有"))
+
+melanoma_proc <- droplevels(melanoma_proc)
+cat("数据缺失值检查：", sum(is.na(melanoma_proc)), "个缺失值\n", sep = "")
+
+#因贝叶斯方法的要求，需要对所以连续性变量进行离散化处理，连续变量（如年龄、肿瘤厚度）需离散化，分类变量需转换为因子（明确水平）
+
+# 4. 构建2个时间片数据（T1基线，T2随访1年）
+set.seed(123)
+n <- 800  # 模拟800个样本
+# 时间片1（T1：基线）
+slice1 <- melanoma_proc[sample(1:nrow(melanoma_proc), n, replace = TRUE), ]
+slice1 <- droplevels(slice1)
+colnames(slice1) <- paste0(colnames(slice1), "_T1")
+
+# 时间片2（T2：随访1年）：溃疡状态转移逻辑（基于T1预测因子）
+slice2 <- data.frame(
+  年龄_T2 = slice1$年龄_T1,  # 年龄不变
+  性别_T2 = slice1$性别_T1,  # 性别不变
+  # 肿瘤厚度转移：薄→90%保持，10%→中；中→70%保持，20%→薄，10%→厚；厚→80%保持，20%→中
+  `肿瘤厚度_T2` = ifelse(slice1$`肿瘤厚度_T1` == "薄",
+                     sample(c("薄", "中"), n, prob = c(0.9, 0.1), replace = TRUE),
+                     ifelse(slice1$`肿瘤厚度_T1` == "中",
+                            sample(c("中", "薄", "厚"), n, prob = c(0.7, 0.2, 0.1), replace = TRUE),
+                            sample(c("厚", "中"), n, prob = c(0.8, 0.2), replace = TRUE)
+                     )
+  ),
+  # 溃疡状态转移（结局指标，依赖T1肿瘤厚度、年龄、性别）
+  `溃疡状态_T2` = ifelse(slice1$`肿瘤厚度_T1` == "厚",  # 厚肿瘤更易出现溃疡
+                     sample(c("有", "无"), n, prob = c(0.7, 0.3), replace = TRUE),
+                     ifelse(slice1$`肿瘤厚度_T1` == "中",
+                            sample(c("无", "有"), n, prob = c(0.6, 0.4), replace = TRUE),
+                            # 薄肿瘤：结合性别（男性略高）和年龄（高龄略高）
+                            ifelse(slice1$性别_T1 == "男性" & slice1$年龄_T1 == "高龄",
+                                   sample(c("无", "有"), n, prob = c(0.8, 0.2), replace = TRUE),
+                                   sample(c("无", "有"), n, prob = c(0.9, 0.1), replace = TRUE)
+                            )
+                     )
+  )
+)
+# 强制因子水平与T1一致
+slice2 <- lapply(seq_along(slice2), function(i) {
+  factor(slice2[[i]], levels = levels(slice1[[i]]))
+}) |> setNames(colnames(slice2)) |> as.data.frame() |> droplevels()
+
+# 合并2时间片数据集
+dbn_data <- cbind(slice1, slice2)
+cat("DBN数据集变量：", colnames(dbn_data), "\n", sep = " ")  # 确认变量为4个（年龄、性别、肿瘤厚度、溃疡状态）
+
+#：动态贝叶斯网络（DBN）是贝叶斯网络在时间序列数据上的扩展，核心是通过时间片（time slice） 建模变量随时间的动态变化，且满足马尔可夫性（当前状态仅依赖于前一时间片状态，简化为一阶马尔可夫：T2 依赖 T1）。
+# 时间片结构：T1（基线）和 T2（随访）包含相同变量（年龄、性别、肿瘤厚度、溃疡状态），体现 DBN 的 “时间同构性”（各时间片变量结构一致）。
+  
+# 5. 静态贝叶斯网络（T1基线）：重新定义无环因果链（溃疡为结局）
+static_vars <- colnames(slice1)
+static_data <- dbn_data[, static_vars]
+
+# 核心因果链（临床逻辑：基础特征→肿瘤特征→溃疡状态）
+# 无环性保证：所有边方向为"上游→下游"，无反向依赖
+manual_arcs <- matrix(
+  c(
+    "年龄_T1", "肿瘤厚度_T1",    # 年龄→肿瘤厚度（高龄可能肿瘤更厚）
+    "性别_T1", "肿瘤厚度_T1",    # 性别→肿瘤厚度（男性可能肿瘤更厚）
+    "肿瘤厚度_T1", "溃疡状态_T1", # 肿瘤厚度→溃疡状态（核心：厚肿瘤更易出现溃疡）
+    "年龄_T1", "溃疡状态_T1"     # 年龄→溃疡状态（高龄可能直接影响溃疡风险）
+  ),
+  ncol = 2, byrow = TRUE
+)
+
+static_bn <- empty.graph(static_vars)
+arcs(static_bn) <- manual_arcs  # 确保无环
+
+# 静态贝叶斯网络（BN）是有向无环图（DAG），由节点（变量）和有向边（条件依赖关系）组成，且无环,结构学习包括三种形式（专家经验法，样本数据法，混合算法），此处因虚拟数据，则采用第一种形式
+
+# 6. 静态网络参数学习
+static_fit <- bn.fit(static_bn, static_data, method = "mle")
+
+# 贝叶斯网络的参数是条件概率表（CPT），描述每个节点在其父节点（有向边指向它的节点）所有可能取值组合下的条件概率。参数学习是在已知结构（DAG）的情况下，从数据中估计 CPT
+# method = "mle"表示用最大似然估计（频率学派方法）计算 CPT，例如 “在肿瘤厚度为‘厚’且年龄为‘高龄’时，溃疡状态为‘有’的概率”。
+  
+# 7. 动态贝叶斯网络（2时间片，T1→T2）
+all_nodes <- c(colnames(slice1), colnames(slice2))
+dbn_structure <- empty.graph(all_nodes)
+arcs(dbn_structure) <- manual_arcs  # 添加T1内部因果链
+
+# 跨时间片边（T1→T2，前向依赖，无环）
+inter_arcs <- matrix(
+  c(
+    "年龄_T1", "年龄_T2",
+    "性别_T1", "性别_T2",
+    "肿瘤厚度_T1", "肿瘤厚度_T2",
+    "溃疡状态_T1", "溃疡状态_T2"  # 基线溃疡状态影响1年随访状态
+  ),
+  ncol = 2, byrow = TRUE
+)
+arcs(dbn_structure) <- rbind(arcs(dbn_structure), inter_arcs)
+
+# DBN 的结构由两部分组成：
+# 同时间片边（intra-slice arcs）：每个时间片内部的依赖关系（复用 T1 的静态网络结构，体现各时间片内的因果逻辑一致）。
+# 跨时间片边（inter-slice arcs）：连接相邻时间片变量的边（T1→T2），体现变量随时间的延续性（如当前肿瘤厚度依赖过去的厚度），是 DBN 建模动态变化的核心。
+
+# 8. DBN参数学习
+dbn_fit <- bn.fit(dbn_structure, dbn_data, method = "mle")
+
+# DBN 的参数学习不仅需估计同时间片内的 CPT（如 T2 内年龄→肿瘤厚度的概率），还需估计跨时间片的转移概率（如 T1 肿瘤厚度为 “薄” 时，T2 肿瘤厚度为 “中” 的概率）。
+# dbn_fit包含所有节点的 CPT，例如 “T2 溃疡状态” 的概率依赖其父节点（可能包括 T1 的肿瘤厚度、年龄、溃疡状态等）。
+
+# 9. 结果展示（聚焦溃疡状态结局）
+cat("\n===== 静态网络（基线T1）核心因果链 =====", "\n")
+print(arcs(static_bn))  # 显示预测因子→溃疡状态的路径
+
+cat("\n===== 基线溃疡状态（结局）条件概率 =====", "\n")
+print(static_fit$`溃疡状态_T1`)  # 肿瘤厚度、年龄对基线溃疡的影响
+
+cat("\n===== 肿瘤厚度与性别的关联（T1） =====", "\n")
+print(static_fit$`肿瘤厚度_T1`)  # 性别对肿瘤厚度的影响
+
+cat("\n===== T1→T2溃疡状态转移概率 =====", "\n")
+print(dbn_fit$`溃疡状态_T2`)  # 1年随访溃疡状态的变化
+
+# 10. 预测评估（用T1预测因子预测T2溃疡状态）
+pred_data <- dbn_data[, colnames(slice1)]  # T1的年龄、性别、肿瘤厚度
+pred_溃疡_T2 <- predict(dbn_fit, node = "溃疡状态_T2", data = pred_data)
+accuracy <- mean(pred_溃疡_T2 == dbn_data$溃疡状态_T2, na.rm = TRUE)
+
+cat("\n===== 预测准确率 =====", "\n")
+cat(paste0("DBN预测1年溃疡状态准确率：", round(accuracy, 3), "\n"))
