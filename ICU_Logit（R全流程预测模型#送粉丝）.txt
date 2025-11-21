@@ -1,0 +1,794 @@
+
+################################Part one-诊断预测模型实战########################
+#设置工作路径
+getwd()
+setwd("D:/R work")
+
+
+##一、数据准备
+#1.数据读取（读进来）
+#install.packages("readr")
+library(readr)
+mydata <- read_csv("ICU.csv")
+
+#删除有缺失值的行
+mydata<-na.omit(mydata)
+View(mydata)
+
+names(mydata)
+
+
+#必须做，了解变量类型非常重要
+str(mydata)
+
+
+
+##############################################
+is.data.frame(mydata)
+mydata<-as.data.frame(mydata)
+#############################################
+
+#attach(mydata)
+
+
+head(mydata)
+#head(mydata,6)
+--------------------------------
+
+
+
+#2.数据准备
+#2.1数值变量准备
+#2.1.1数据摘要
+summary(mydata)
+
+
+
+
+##################################
+#方法四:数据集指定（如果数据集中已经有数据集分组变量，可以如下指定即可）
+dev = mydata[mydata$group==1,]
+vad = mydata[mydata$group==0,]
+##################################
+
+
+
+##二、模型构建
+#2.1传统先单后多：单因素Logsitic回归分析
+M1<-glm(dead==1~ dev$gender,data=dev,family=binomial)
+M1
+
+#如此继续即可
+
+M2<-glm(dead==1~ dev$Temp,data=dev,family=binomial)
+summary(M2)
+
+M3<-glm(dead==1~ dev$SYSBP,data=dev,family=binomial)
+summary(M3)
+
+
+#多因素分析
+MM<-glm(dead==1~ dev$gender+dev$Temp+dev$SYSBP,data=dev,family=binomial)
+MM
+summary(MM)
+
+
+#看模型的系数及95%CI
+cbind(coef= coef(MM),confint(MM))
+#看模型的OR及95%CI
+exp(cbind(OR= coef(MM),confint(MM)))
+
+
+#2.2单因素Logistic回归（批量执行）
+
+uni_glm_model<-function(x){
+  FML<-as.formula(paste0("dead==1~",x))  #hypoglycemia==1，指的是1为目标结局事件
+  glm1<-glm(FML,data = dev,family = binomial)
+  glm2<-summary(glm1)
+  
+  #计算我们所要的指标
+  OR<-round(exp(coef(glm1)),2)        #这里含有一个常数项
+  SE<-round(glm2$coefficients[,2],3)  #
+  CI2.5<-round(exp(coef(glm1)-1.96*SE),2)
+  CI97.5<-round(exp(coef(glm1)+1.96*SE),2)
+  CI<-paste0(CI2.5,'-',CI97.5)
+  B<-round(glm2$coefficients[,1],3)
+  Z<-round(glm2$coefficients[,3],3)
+  P<-round(glm2$coefficients[,4],3)
+  
+  #将计算出来的指标制作为数据框
+  uni_glm_model<-data.frame('characteristics'=x,
+                            'B'=B,
+                            'SE'=SE,
+                            'OR'=OR,
+                            'CI'=CI,
+                            'Z' =Z,
+                            'P'=P)[-1,]#删除第一行，第一行未常数项
+  
+  return(uni_glm_model)
+}
+
+#指定参与分析的若干自变量X
+variable.names<-colnames(dev)[c(2:18)]  #要核实这里的X对应的列是否对？若分开的可以这样[c(3:18,20:40)]
+variable.names
+
+#运行上面自定义批量执行函数
+uni_glm<-lapply(variable.names,uni_glm_model)
+uni_glm
+
+
+#install.packages("plyr")
+library(plyr)
+
+#生成单变量分析的综合结果
+uni_glm<-ldply(uni_glm,data.frame)
+
+#看下结果是啥样子的
+uni_glm
+
+View(uni_glm)
+
+
+#将单因素分析的结果，写到csv中.
+write.csv(uni_glm, "uni.csv")
+
+
+#将P<0.05的结果挑选出来（如需）
+uni_glm1 <- uni_glm[uni_glm$P<= 0.05,]
+uni_glm1
+
+#将P<0.1的结果挑选出来（如需）
+uni_glm2 <- uni_glm[uni_glm$P<= 0.1,]
+uni_glm2
+
+#直接将P<0.05的变量的characteristics提取出来
+uni_glm$characteristics[uni_glm$P<= 0.05]
+
+#直接将P<0.1的变量的characteristics提取出来
+uni_glm$characteristics[uni_glm$P<= 0.1]
+
+#将P<0.05的结果，写到csv中（如需).
+write.csv(uni_glm1, "p5.csv")
+write.csv(uni_glm2, "p10.csv")
+##将单因素P<0.05挑选出来直接进行多因素分析
+#逐步回归https://blog.csdn.net/qq_38204302/article/details/86567356?utm_medium=distribute.pc_relevant.none-task-blog-2%7Edefault%7ECTRLIST%7Edefault-4.nolandingword2&depth_1-utm_source=distribute.pc_relevant.none-task-blog-2%7Edefault%7ECTRLIST%7Edefault-4.nolandingword2
+
+
+########################2.3多因素分析#####################
+#1.多因素-enter法 
+#先写一个公式，方便后面重复使用
+fml<- as.formula(paste0('dead==1~',paste0(uni_glm$characteristics[uni_glm$P<0.1],collapse = '+'))) #P<0.05也是可以的
+fml
+
+dead == 1 ~ Temp + SYSBP + AST + WBC + CRP + Sodium + Potassium + 
+  BUN + Platelets + age + RESP + HR + SPO2
+
+fml<- as.formula(dead == 1 ~ Temp + SYSBP + AST + WBC + CRP + Sodium + Potassium + 
+                   BUN + Platelets + age + RESP + HR + SPO2)
+
+##1.1多因素enter回归
+modelA<-glm(fml,data = dev,family=binomial)
+
+modelA             #只能拿到模型的系数
+
+summary(modelA)    #可以拿到模型概要
+
+   
+
+
+#2.多因素—forward
+
+
+modelX<-glm(dead~1,data = dev,family=binomial)
+modelX
+summary(modelX)
+
+#modelB中的变量可以用前面的fml的结果复制过来
+modelB<-step(modelX,scope=list(upper=~ Temp + SYSBP + AST + WBC + CRP + Sodium + Potassium + 
+                                 BUN + Platelets + age + RESP + HR + SPO2,lower=~1),data = dev,family=binomial,direction ="forward")
+
+summary(modelB)
+
+
+#3.多因素-backward
+modelC<-step(modelA,direction ="backward")
+summary(modelC)
+
+#4.多因素-both
+modelD<-step(modelA,direction = "both",data=dev)
+summary(modelD)
+
+
+#看模型的系数及95%CI
+cbind(coef=coef(modelD),confint(modelD))
+
+#看模型的OR及95%CI
+exp(cbind(OR=coef(modelD),confint(modelD)))
+
+
+#模型AIC
+AIC(modelA,modelB,modelC,modelD)
+
+
+
+#模型AIC比较
+anova(modelA,modelB,test = "Chisq")
+anova(modelA,modelC,test = "Chisq")
+anova(modelA,modelD,test = "Chisq")
+anova(modelB,modelC,test = "Chisq")
+anova(modelB,modelD,test = "Chisq")
+anova(modelC,modelD,test = "Chisq")
+# test= 的选项可以后面选择"Rao","LRT" , "Chisq","F","Cp"
+#注意ModelB，可以把模型B最终结果，再跑一次enter，然后比较就没有难问题了
+
+###确定最终模型
+#结果上述比较，决定采用modelD的结果
+
+modelC<-step(modelA,direction = "both")
+modelC
+glm3<-summary(modelC)
+glm3
+
+
+glm3$coefficients   #看下最终模型方程
+
+
+OR<-round(exp(glm3$coefficients[,1]),2)
+OR
+
+SE<-round(glm3$coefficients[,2],3)
+CI2.5<-round(exp(coef(modelD)-1.96*SE),2)
+CI97.5<-round(exp(coef(modelD)+1.96*SE),2)
+CI<-paste0(CI2.5,'-',CI97.5)
+B<-round(glm3$coefficients[,1],3)
+Z<-round(glm3$coefficients[,3],3)
+P<-round(glm3$coefficients[,4],3)
+
+
+
+
+#制作数据框#'characteristics'=multiname,
+mlogit<-data.frame( 
+  'B'=B,
+  'SE'=SE,
+  'OR'=OR,
+  'CI'=CI,
+  'Z' =Z,
+  'P'=P)[-1,]
+mlogit
+
+#删除第一行常数项，如果上面没有[-1,]，则会产生常数项，导致不能合并
+#mlogit<-mlogit[-1,] 
+
+View(mlogit)
+
+#将多因素分析结果写入csv
+write.csv(mlogit, "multi.csv")
+
+
+#展示一下数据库变量列表
+names(mydata)
+
+
+
+
+#提取最终模型，多因素分析有意义变量
+multinames<-as.character(colnames(mydata)[c(3,8:13,15)])
+
+#检验是否正确
+multinames
+
+
+#
+mlogit<-data.frame('characteristics'=multinames,mlogit)
+                   
+mlogit
+
+
+View(mlogit)
+
+#再次将正确的多因素分析结果写入csv
+write.csv(mlogit, "multi.csv")
+
+##########至此先单后多分析完毕!!######################
+
+#合并先单后多分析表格
+final<-merge.data.frame(uni_glm,mlogit,by='characteristics',all = T,sort = T)
+
+
+#展示结果
+final
+
+View(final)
+#将结果写入CSV
+write.csv(final, "final.csv")
+
+###############################至此，先单后多完美结束####################################
+#----------------------------------------------------------------------------------------
+
+##########################Part TWO.模型验证#############################################
+#1.模型区分度分析
+#1.1训练集区分度AUC
+#放了方便大家理解，我们采用两个模型进行后续演示，分别为全8因子模型和6因子模型
+
+
+
+#最终8因素模型
+fml8<-as.formula(dead == 1 ~ Temp + CRP + Sodium + 
+                  Potassium + BUN + Platelets + age + HR)
+
+#在构建一个6因子的模型，目的是让大家掌握对两个模型进行比较的方法，
+#如果您就做一个模型，那么这步可以不用学习。
+fml6<-as.formula(dead == 1 ~ Temp + CRP + Sodium + 
+                   Potassium + BUN + Platelets )
+
+
+model8<-glm(fml8,data = dev,family = binomial(logit))
+
+model6<-glm(fml6,data = dev,family = binomial(logit))
+
+
+#在建模人群中计算预测值
+dev$predmodel8<- predict(newdata=dev,model8,"response")
+dev$predmodel6<- predict(newdata=dev,model6,"response")
+
+
+#在验证人群计算预测值
+vad$predmodel8<- predict(newdata=vad,model8,"response")
+vad$predmodel6<- predict(newdata=vad,model6,"response")
+
+
+#绘制ROC曲线,先安装pROC包
+
+#install.packages("pROC")
+
+library(pROC)
+
+#在建模人群中绘制分别二条ROC曲线并给出阈值和ROC曲线下面积。
+#建模集，model8的auc与roc分析
+devmodelA <- roc(dead~predmodel8, data = dev,smooth=F)
+devmodelA
+
+round(auc(devmodelA),3)
+round(ci(auc(devmodelA)),3)
+
+
+#ROC画图方法一(灵敏度与特异度ROC，非标准；但会给出AUC，阈值及对应的灵敏度和特异度)
+plot(devmodelA, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE", col= "blue",print.thres.col="blue",identity.col="blue",
+     identity.lty=1,identity.lwd=1)
+
+
+#ROC画图方法二(FP与TP/1-specificity与sensitivity；标准ROC)
+plot(1-devmodelA$specificities,devmodelA$sensitivities,type="l",col="red",lty=1,xlab = "FP",ylab = "TP",lwd=2)
+abline(0,1)
+
+#ROC画图方法三（类似方法一，图中未标统计量）
+devrocA <- plot.roc(dev$dead, dev$predmodel8, main="dev ROC", percent=TRUE, col="1")
+
+#################################################################
+
+##建模集，model6的auc与roc分析
+devmodelB <- roc(dead~predmodel6, data = dev,smooth=F)
+devmodelB
+round(auc(devmodelB),3)
+round(ci(auc(devmodelB)),3)
+
+
+#ROC画图方法一：
+plot(devmodelB, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE", col= "red",print.thres.col="red",identity.col="red",
+     identity.lty=1,identity.lwd=1)
+
+#ROC画图方法二
+plot(1-devmodelB$specificities,devmodelB$sensitivities,type="l",col="red",lty=1,xlab = "FP",ylab = "TP",lwd=2)
+abline(0,1)
+#ROC画图方法三
+devrocB <- plot.roc(dev$dead, dev$predmodel6, main="dev ROC", percent=TRUE, col="1")   #设置percent=F看看
+
+
+
+###################################################
+###8.校准度分析（只要有预测概率和目标Y即可）    ###
+###################################################
+
+
+###########################################
+#######校准曲线实现方法一
+###########################################
+install.packages("calibrate")
+library(calibrate)
+library(MASS)
+install.packages("rms")
+library(rms)
+
+
+#在建模人群中绘制Calibration plot
+val.prob(dev$predmodel8,dev$dead)
+val.prob(dev$predmodel6,dev$dead)
+
+
+#在验证人群中绘制Calibration plot
+val.prob(vad$predmodel8,vad$dead)
+val.prob(vad$predmodel6,vad$dead)
+
+
+
+####################################################
+##校准曲线实现方法二：（Bootstrap方法)
+####################################################
+#install.packages("riskRegression")
+library(riskRegression)
+
+
+formula<-dead == 1 ~ Temp + CRP + Sodium + 
+  Potassium + BUN + Platelets + age + HR
+
+
+###
+fml8<-as.formula(dead == 1 ~ Temp + CRP + Sodium + 
+                   Potassium + BUN + Platelets + age + HR)
+
+#在建模集中制作校准曲线
+fit1<-glm(formula,data=dev,family = binomial())
+xb<-Score(list("fit"=fit1),formula=dead~1,
+          null.model=FALSE,
+          plots=c("calibration","ROC"),
+          metrics=c("auc","brier"),
+          B=1000,M=50,
+          data=dev)
+plotCalibration(xb,col="red")
+
+#在验证集中制作校准曲线
+fit2<-glm(fit1,data=vad,family = binomial())
+xb<-Score(list("fit"=fit1),formula=dead~1,
+          null.model=FALSE,
+          plots=c("calibration","ROC"),
+          metrics=c("auc","brier"),
+          B=1000,M=50,
+          data=vad)
+plotCalibration(xb,col="red")
+
+
+############################################
+##校准曲线实现方法三(succeed)
+############################################
+#在建模集制作校准曲线
+
+#install.packages("rms")
+library(rms)
+
+fit3<-lrm(formula,data=dev,x=TRUE,y=TRUE)
+cal3<-calibrate(fit3,method="boot",B=1000)
+
+plot(cal3,
+     xlim = c(0,1),
+     xlab = "Predicted Probability",
+     ylab = "Observed Probability",
+     legend=FALSE,
+     subtitles = FALSE)
+
+     abline(0,1,col="black",lty=2,lwd=2)
+     
+     lines(cal3[,c("predy","calibrated.orig")],type = "l",lwd=2,col="red",pch=16)
+     lines(cal3[,c("predy","calibrated.corrected")],type = "l",lwd=2,col="green",pch=16)
+     legend(0.55,0.35,
+            c("Ideal","Apparent","Bias-corrected"),
+            lty = c(2,1,1),
+            lwd = c(2,1,1),
+            col = c("black","red","green"),
+            bty = "n")   #"o"为加边框
+
+     
+#在验证集制作校准曲线
+fit4<-lrm(fit3,data=vad,x=TRUE,y=TRUE)
+cal4<-calibrate(fit4,method="boot",B=1000)
+     
+plot(cal4,
+          xlim = c(0,1),
+          xlab = "Predicted Probability",
+          ylab = "Observed Probability",
+          legend=FALSE,
+          subtitles = FALSE)
+     
+  abline(0,1,col="black",lty=2,lwd=2)
+     
+  lines(cal4[,c("predy","calibrated.orig")],type = "l",lwd=2,col="red",pch=16)
+  lines(cal4[,c("predy","calibrated.corrected")],type = "l",lwd=2,col="green",pch=16)
+  legend(0.55,0.35,
+            c("Ideal","Apparent","Bias-corrected"),
+            lty = c(2,1,1),
+            lwd = c(2,1,1),
+            col = c("black","red","green"),
+            bty = "n")   #"o"为加边框    
+     
+
+
+
+
+#############################################################
+#9.临床决策曲线分析                        ####
+#############################################################
+library(readr)
+mydata <- read_csv("ICU.csv")
+
+#删除有缺失值的行
+mydata<-na.omit(mydata)
+
+#数据集指定（如果数据集中已经有数据集分组变量，可以如下指定即可）
+dev = mydata[mydata$group==1,]
+vad = mydata[mydata$group==0,]
+
+
+#################################################
+#######方法：rmda验证完成
+#################################################
+#install.packages("rmda")
+library(rmda)
+
+#http://mdbrown.github.io/rmda/
+
+
+###绘制DCA曲线
+#拟合模型
+
+fml8<-as.formula(dead == 1 ~ Temp + CRP + Sodium + 
+                   Potassium + BUN + Platelets + age + HR)
+
+fml6<-as.formula(dead == 1 ~ Temp + CRP + Sodium + 
+                   Potassium + BUN + Platelets)
+
+model_1<-decision_curve(fml8,
+                        data = dev,
+                        family = binomial(logit),
+                        thresholds = seq(0,1,by=0.01),
+                        confidence.intervals = 0.95,
+                        study.design = 'case-control',
+                        population.prevalence =0.3)
+
+
+
+model_2<-decision_curve(fml6,
+                        data = dev,
+                        family = binomial(logit),
+                        thresholds = seq(0,1,by=0.01),
+                        confidence.intervals = 0.95,
+                        study.design = 'case-control',
+                        population.prevalence =0.3)
+
+
+#绘制曲线
+plot_decision_curve(model_1,curve.names = c('model_1'),
+                    xlim = c(0,0.8),
+                    cost.benefit.axis = FALSE,
+                    col = c('red'),
+                    confidence.intervals = FALSE,
+                    standardize = FALSE)
+
+
+plot_decision_curve(model_2,curve.names = c('model_2'),
+                    xlim = c(0,0.8),
+                    cost.benefit.axis = FALSE,
+                    col = c('green'),
+                    confidence.intervals = FALSE,    #TRUE显示可信区间
+                    standardize = FALSE)
+
+#绘制多条曲线
+plot_decision_curve( list(model_1, model_2), 
+                     curve.names = c("model_1", "model_2"),
+                     col = c("blue", "red"), 
+                     confidence.intervals = FALSE,  #remove confidence intervals
+                     cost.benefit.axis = FALSE, #remove cost benefit axis
+                     legend.position = "topright") #或 "bottomright"
+#添加可信区间
+plot_decision_curve( list(model_1, model_2), 
+                     curve.names = c("model_1", "model_2"),
+                     col = c("blue", "red"), 
+                     confidence.intervals = TRUE,  #confidence intervals
+                     cost.benefit.axis = FALSE, #remove cost benefit axis
+                     legend.position = "topright") #add the legend "bottomright" "topright" "none"
+
+
+
+
+#######################################################
+##################模型可视化###########################
+###################Nomogram############################
+
+
+##############################################
+##############方法一：普通列线图##############
+#install.packages("rms")
+library(rms)
+
+#打包数据
+
+ddist <- datadist(dev)
+options(datadist='ddist')
+
+#构建三个回归模型，注意nomo要用lrm构建模型
+
+fml8
+
+modelA2 <- lrm(fml8,data=dev)
+
+fml6
+modelB2 <- lrm(fml6,data=dev)
+#设置列线图参数
+#第一行modelA就是刚才logistic回归的模型名称。lp选择True或False，是否显示线性预测坐标（linear predictor），fun是要自己设一个函数，对lp进行转换，并建立一个新坐标轴。此处就用logit变换的反函数，将lp转换为我们熟悉的风险概率-。function(x) 1/(1+exp(-x))这一串，即使用function()构建一个自定义函数，括号中的x从lp的范围中取值，代入1/(1+exp(-x))中运算。
+#fun.at则是给新的坐标轴设置范围。funlabel则是给上面转换好的新坐标轴起个名字，Diagnostic possibility。其实有了这条坐标轴，上面lp那里也可以设为F，不显示了。
+
+nomomodelA <- nomogram(modelA2,lp=F, 
+                       fun=function(x)1/(1+exp(-x)),
+                       fun.at=seq(0.1,1,by=0.1),
+                       funlabel="Diagnostic possibility")
+nomomodelA
+
+nomomodelB <- nomogram(modelB2,lp=F, 
+                       fun=function(x)1/(1+exp(-x)),
+                       fun.at=seq(0.1,1,by=0.1),
+                       funlabel="Diagnostic possibility")
+nomomodelB
+#方法一:绘制普通列线图
+
+plot(nomomodelA)
+plot(nomomodelB)
+
+
+#####################################################
+################方法二：交互列线图###################
+
+
+#################################################
+#dev$Temp<-factor(dev$Temp,labels=c('<37','>=37'))
+#relevel(rawdata$DM,ref= 'DM')
+##################################################
+
+#设为因子变量
+dev$Temp<-factor(dev$Temp,labels=c('<37','>=37'))
+dev$CRP<-factor(dev$CRP,labels=c('<41','>=41'))
+dev$Sodium<-factor(dev$Sodium,labels=c('<135','>=135'))
+dev$Potassium<-factor(dev$Potassium,labels=c('<4.25','>=4.25'))
+dev$BUN<-factor(dev$BUN,labels=c('<42','>=42'))
+dev$Platelets<-factor(dev$Platelets,labels=c('<232','>=232'))
+dev$age<-factor(dev$age,labels=c('<60','>=60'))
+dev$HR<-factor(dev$HR,labels=c('<30','>=30'))
+
+
+
+#方法二：绘制交互式列线图安装程序包，必须用glm函数
+install.packages("regplot")
+library(regplot)
+
+
+modelC <- glm(fml8, data = dev, family = binomial(link="logit"))
+summary(modelC)
+cbind(coef= coef(modelC),confint(modelC))
+exp(cbind(OR= coef(modelC),confint(modelC)))
+dev$predmodelC<- predict(newdata=dev,modelC,"response")
+
+regplot(modelC,observation=dev[2,]) #改变前面数字，即可以知道数据框中第几个人的预测概率
+
+####如下为细节加强版
+regplot(modelC,#模型名称
+        observation=dev[3,],#改变前面数字，即可以知道数据框中第几个人的预测概率
+        center=TRUE,       #将每个变量设置不从0开始
+        title = "Nomogram",#设置标题
+        points = TRUE,     #point最大刻度设置成100
+        odds = FALSE,      #设置是否显示OR
+        showP = TRUE,      #显示变量是否存在统计学意义
+        rank = "sd",       #按照回归系数的SD进行变量排序
+        clickable = TRUE) #是否可以点击进行交互#TRUE体验交互
+
+
+
+
+
+
+##########LASSO#################################################
+#利用R软件进行Lasso回归筛选预测因子（如下LASSO代码测试成功没问题）
+################################################################
+#install.packages("glmnet")
+
+library(glmnet)
+library(Matrix)
+library(rms)
+library(foreign)
+library(readr)
+setwd("D:/R work")
+
+mydata <- read_csv("ICU.csv")
+
+mydata<-na.omit(mydata)
+#将结果变量中缺失数据删除，读者根据自己数据特点决定是否需要此命令。
+
+dev = mydata[mydata$group==1,]
+#vad = mydata[mydata$group==0,]
+
+#write.csv(dev, "dev.csv")
+
+
+install.packages("psych")
+
+library(psych)
+
+describe(dev)
+str(dev)
+
+#将数据转换成因子变量,二分类变量可转可不转，注意对于lasso，无序多分类需要手动设置哑变量
+#names(dev)
+#for (i in names(dev)[c(4:6,8)]){dev[,i] <- as.factor(dev[,i])}
+#str(dev)
+View(dev)
+
+
+############################封箱####################################
+#无序多变量处理
+dev$marital_status<-factor(dev$marital_status,
+                           levels=c(1,2,3,4),
+                           labels=c("married", "unmarried","divorce","widow"))
+
+dev$marital_status1<-ifelse(dev$marital_status=='married',1,0)
+dev$marital_status2<-ifelse(dev$marital_status=='unmarried',1,0)
+dev$marital_status3<-ifelse(dev$marital_status=='divorce',1,0)
+dev$marital_status4<-ifelse(dev$marital_status=='widow',1,0)
+
+View(dev)
+############################封箱#####################################
+
+#因子的处理
+#xfactors <- as.matrix(dev[4:6,8])
+#x <- as.matrix(data.frame(dev[,c(4:40)]))
+
+#定义X矩阵
+x <- as.matrix(dev[,c(2:18)])
+
+#write.csv(x,file='xdata.csv')
+
+#定义Y矩阵
+y <- as.matrix(dev[,1])
+
+fit<-glmnet(x,y,alpha=1,family='binomial')
+plot(fit)
+
+plot(fit, xvar = "lambda", label = TRUE)
+plot(fit, xvar = "lambda", label = FALSE)
+abline(v=log(c(cv.fit$lambda.min,cv.fit$lambda.1se)),lty=2)
+
+
+print(fit)
+
+
+#可以直接用Lasso模型进行预测
+dev$lassopred <-predict(fit,type="response",newx=x[1:768,],s=0.000108)  #x[1:768,]768代表咱dev中的样本量或记录数
+
+View(dev)
+
+#####################################################################
+#############CVlasso交叉验证############目的：(1)筛选变量，找到最优模型，(2)利用最优模型预测概率
+set.seed(123)
+cv.fit <- cv.glmnet(x,y,alpha=1,nfolds = 10)
+plot(cv.fit)
+abline(v=log(c(cv.fit$lambda.min,cv.fit$lambda.1se)),lty=2)
+
+#?cv.glmnet
+#?glmnet
+#如果取最小值时
+cv.fit$lambda.min
+Coefficients <- coef(fit, s = cv.fit$lambda.min)
+Active.Index <- which(Coefficients != 0)
+Active.Coefficients <- Coefficients[Active.Index]
+Active.Index
+Active.Coefficients
+row.names(Coefficients)[Active.Index]
+dev$minlassopred <-predict(fit,type="response",newx=x[1:768,],s=cv.fit$lambda.min)  #x[1:768,]768代表咱dev中的样本量或记录数
+
+#如果取1倍标准误
+cv.fit$lambda.1se
+Coefficients <- coef(fit, s = cv.fit$lambda.1se)
+Active.Index <- which(Coefficients != 0)
+Active.Coefficients <- Coefficients[Active.Index]
+Active.Index
+Active.Coefficients
+row.names(Coefficients)[Active.Index]
+dev$selassopred <-predict(fit,type="response",newx=x[1:768,],s=cv.fit$lambda.1se)
+
+
