@@ -1,0 +1,120 @@
+
+##步骤 1：导入必要的库
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import ElasticNetCV
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+
+##############################
+
+##步骤 2：生成虚拟数据集
+##创建一个包含 3 个特征的数据集，其中两个特征高度相关，以此测试弹性网络处理相关特征的能力
+
+np.random.seed(42)  # 设置随机种子，确保结果可复现
+n_samples, n_features = 1000, 3  # 1000个样本，3个特征
+
+# 生成特征矩阵 X
+X = np.random.randn(n_samples, n_features)
+
+# 设置真实系数（模拟两个高度相关的重要特征和一个不重要特征）
+coef = 3 * np.random.randn(n_features)  # 初始系数
+coef[2] = 0  # 第三个特征不重要（系数为0）
+
+# 生成目标变量 y，添加随机噪声
+y = np.dot(X, coef) + np.random.normal(0, 0.5, size=n_samples)
+
+# 打印真实系数，用于后续对比
+print(f"真实系数: {coef}")
+
+##############################
+
+##步骤 3：数据分割与模型训练
+##使用 ElasticNetCV 自动进行交叉验证，寻找最优的 
+
+# 分割数据集为训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# 创建并拟合弹性网络模型（使用5折交叉验证）
+regr = ElasticNetCV(cv=5, random_state=42)
+regr.fit(X_train, y_train)
+
+# 输出最优参数和特征系数
+print(f"最优 alpha: {regr.alpha_}")
+print(f"最优 l1_ratio (ρ): {regr.l1_ratio_}")
+print(f"模型系数: {regr.coef_}")
+print(f"模型截距: {regr.intercept_}")
+
+##############################
+
+##步骤 4：可视化分析
+##（1）特征系数随正则化参数的变化
+plt.figure(figsize=(12, 7))
+
+# 获取交叉验证过程中的 alpha 值和对应的系数路径
+alphas = regr.alphas_
+coefs = regr.path(X_train, y_train, l1_ratio=regr.l1_ratio_)[1].T
+
+# 绘制每个特征系数随 alpha 的变化
+for i, coef_path in enumerate(coefs):
+    plt.plot(alphas, coef_path, label=f'特征 {i+1}')
+
+plt.xscale('log')  # 使用对数坐标，更好展示 alpha 的变化范围
+plt.xlabel('正则化强度 (alpha)')
+plt.ylabel('系数值')
+plt.title('弹性网络：特征系数随正则化强度的变化')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.show()
+
+##解读：随着正则化强度增加（alpha 增大），特征系数逐渐趋近于 0。注意观察哪些特征先变为 0，哪些保留到最后
+
+##############################
+
+##步骤 4：可视化分析
+##（2）预测值与实际值对比
+
+# 预测测试集
+y_pred = regr.predict(X_test)
+
+plt.figure(figsize=(12, 7))
+plt.scatter(y_test, y_pred, color='blue', edgecolor='k', alpha=0.7)
+plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 
+         color='red', lw=2, linestyle='--')  # 理想预测线
+
+plt.xlabel('实际值')
+plt.ylabel('预测值')
+plt.title('弹性网络：预测值 vs 实际值')
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.show()
+
+##解读：散点越接近红色对角线，说明模型预测越准确
+
+##############################
+
+##步骤 5：模型性能评估
+
+# 计算 R² 分数（决定系数）
+r2 = r2_score(y_test, y_pred)
+print(f'模型 R² 分数: {r2:.4f}')
+
+# 计算均方误差
+mse = np.mean((y_test - y_pred) ** 2)
+print(f'模型均方误差 (MSE): {mse:.4f}')
+
+##############################
+
+##结果分析与结论
+##1. 特征选择能力：
+##弹性网络成功识别出第三个特征不重要（系数接近 0），与我们设置的真实系数一致；
+##对于两个相关的重要特征，弹性网络同时保留了它们，而非像拉索那样只选择其中一个。
+##2. 参数调优：
+## 通过交叉验证自动选择的 α和ρ 参数，使模型在训练集和测试集上都表现良好；
+##ρ 的值反映了 L1 和 L2 的平衡：当 ρ 接近 1 时，模型更接近拉索；当 ρ 接近 0 时，模型更接近岭回归。
+#3. 预测性能：
+#R² 分数接近 1，说明模型能够解释大部分数据变异；
+#散点图显示预测值与实际值高度吻合，验证了模型的有效性
+

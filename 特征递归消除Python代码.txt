@@ -1,0 +1,56 @@
+##(一)导入数据
+##选取的是python内置的鸢尾花数据，是有标签的数据，一共150个样本，四个特征
+# 导入所需的库
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn import tree
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.tree import DecisionTreeClassifier
+ 
+ 
+# 导入鸢尾花数据集
+iris = load_iris()
+X = iris.data # 特征
+y = iris.target # 类别
+feature_names = iris.feature_names # 特征名称
+class_names = iris.target_names # 类别名称
+
+
+#实例化
+clf = DecisionTreeClassifier()
+#本次选择的模型是分类决策树
+
+
+#RFE方法进行递归特征消除法
+from sklearn.feature_selection import RFE
+from sklearn.model_selection import cross_val_score
+#递归特征消除法
+ 
+selector1 = RFE(clf, n_features_to_select=3, step=1).fit(X, y) 
+# n_features_to_select表示筛选最终特征数量，step表示每次排除一个特征
+ 
+selector1.support_.sum()
+#计算在 RFE 过程中被选中的特征数量，即布尔数组中值为 True 的个数，也就是最终选择的特征数量。
+ 
+ 
+print(selector1.ranking_)
+#这个属性返回的是特征的排名，从1开始，表示每个特征在所有特征中的重要性排名，1为最重要的特征。
+                                             
+print(selector1.n_features_)  
+#这是RFE在执行完所有递归步骤后最终选择的特征数量。
+ 
+                                        
+X_wrapper1 = selector1.transform(X) 
+#通过transform方法，selector1只保留了被选中的特征，生成新的特征矩阵X_wrapper1。   
+ 
+                               
+score =cross_val_score(clf, X_wrapper1, y, cv=9).mean()
+#使用cross_val_score进行9折交叉验证，评估clf模型在选择特征后的表现。mean()函数计算所有验证分数的平均值，作为模型性能的估计。
+ 
+ 
+print(score)
+
+#结果，表明选择了三个特征，分别是原始数据中的第一个、第三个、第四个特征。
